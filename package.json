@@ -1,0 +1,36 @@
+{
+  "name": "ai-code-review-bot",
+  "module": "index.ts",
+  "type": "module",
+  "private": true,
+  "devDependencies": {
+    "@biomejs/biome": "2.5.6",
+    "@effect/language-service": "^0.87.1",
+    "@types/bun": "latest"
+  },
+  "scripts": {
+    "prepare": "effect-language-service patch",
+    "format": "biome format --write .",
+    "format:check": "biome format .",
+    "lint": "biome lint --write .",
+    "lint:check": "biome lint .",
+    "check": "biome check --write .",
+    "check:check": "biome check .",
+    "ci": "biome ci .",
+    "biome:start": "biome start",
+    "biome:stop": "biome stop",
+    "biome:clean": "biome clean",
+    "biome:version": "biome version",
+    "biome:rage": "biome rage",
+    "migrate:eslint": "biome migrate eslint",
+    "migrate:prettier": "biome migrate prettier"
+  },
+  "peerDependencies": {
+    "typescript": "^6"
+  },
+  "dependencies": {
+    "@effect/platform-bun": ">=4.0.0-beta.102 || >=4.0.0",
+    "@effect/platform-node": ">=4.0.0-beta.102 || >=4.0.0",
+    "effect": ">=4.0.0-beta.102 || >=4.0.0"
+  }
+}
