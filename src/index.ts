@@ -7,6 +7,16 @@ import { extractChangedFiles, GitDiff, GitDiffLive } from "./services/GitDiff.ts
 import { GithubReporter, GithubReporterLive } from "./services/GithubReporter.ts"
 import { Linter, LinterLive } from "./services/Linter.ts"
 
+// Merging a PR (or any other push to a watched branch) can trigger this
+// workflow even though `on:` only lists `pull_request` — GitHub's merge
+// button produces both a `pull_request: closed` event and a `push` to the
+// base branch, and depending on workflow config either can fire this job.
+// There's no PR to review in that case — that's a no-op, not a failure.
+if (process.env.GITHUB_EVENT_NAME !== "pull_request") {
+  console.log(`Skipping review — triggering event was "${process.env.GITHUB_EVENT_NAME}", not "pull_request".`)
+  process.exit(0)
+}
+
 const program = Effect.gen(function* () {
   const gitDiff = yield* GitDiff
   const linter = yield* Linter
