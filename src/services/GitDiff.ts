@@ -4,7 +4,7 @@ import * as Layer from "effect/Layer"
 import * as Redacted from "effect/Redacted"
 import * as Schedule from "effect/Schedule"
 import * as Schema from "effect/Schema"
-import { flow } from "effect"
+import { flow } from "effect/Function"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 
 import { AppConfig } from "../config"
@@ -60,9 +60,7 @@ const make = Effect.gen(function* () {
           ),
       }),
     ),
-    Effect.mapError((cause) =>
-      cause._tag === "GitDiffApiError" ? cause : new GitDiffFetchError({ cause }),
-    ),
+    Effect.mapError((cause) => (cause._tag === "GitDiffApiError" ? cause : new GitDiffFetchError({ cause }))),
   )
 
   return {
