@@ -9,6 +9,8 @@
     "@types/bun": "latest"
   },
   "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun --env-file=.env.local run src/index.ts",
     "prepare": "effect-language-service patch",
     "format": "biome format --write .",
     "format:check": "biome format .",
