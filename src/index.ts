@@ -100,7 +100,7 @@ const program = Effect.fn("program")(function* () {
 })
 
 // Composition for Phase 1 dependencies: EventConfig, PrLookup, HttpClient.
-const Phase1Services = Layer.mergeAll(EventConfigLive, PrLookupLive).pipe(Layer.provide(FetchHttpClient.layer))
+const Phase1Services = Layer.provideMerge(PrLookupLive, EventConfigLive).pipe(Layer.provideMerge(FetchHttpClient.layer))
 
 const runnable = program().pipe(Effect.provide(Phase1Services))
 
