@@ -1,0 +1,32 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Thin caller workflow — COPY this file verbatim into any other repo at
+# .github/workflows/review.yml. It is intentionally short (~15 lines).
+#
+# It triggers on pull_request (opened/synchronize/reopened) AND on push to
+# non-default branches. For a push event, the bot looks up whether an open PR
+# exists for that branch via the GitHub API and reviews it if so.
+#
+# CONSTRAINT: `secrets: inherit` only works within a GitHub organization.
+# Falasefemi2 is a *personal* account, so each caller repo must have its own
+# GROQ_API_KEY secret configured individually — org-level secrets are
+# unavailable on personal accounts. GITHUB_TOKEN is auto-provided by Actions
+# for every repo and needs no setup.
+# ─────────────────────────────────────────────────────────────────────────────
+name: AI Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+  push:
+    branches-ignore: ["main", "master"]
+
+permissions:
+  contents: read
+  pull-requests: write
+  issues: write
+
+jobs:
+  review:
+    uses: Falasefemi2/ai-code-review-bot/.github/workflows/review.yml@main
+    secrets:
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
