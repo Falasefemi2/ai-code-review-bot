@@ -1,10 +1,10 @@
 import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
+import { flow } from "effect/Function"
 import * as Layer from "effect/Layer"
 import * as Redacted from "effect/Redacted"
 import * as Schedule from "effect/Schedule"
 import * as Schema from "effect/Schema"
-import { flow } from "effect/Function"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 
 import { AppConfig } from "../config"
