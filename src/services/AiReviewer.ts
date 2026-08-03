@@ -23,6 +23,11 @@ export class AiReviewerApiError extends Schema.TaggedErrorClass<AiReviewerApiErr
   body: Schema.String,
 }) {}
 
+export class AiReviewerConfigError extends Schema.TaggedErrorClass<AiReviewerConfigError>()("AiReviewerConfigError", {
+  reason: Schema.String,
+  cause: Schema.Defect(),
+}) {}
+
 export class AiReviewerOutputError extends Schema.TaggedErrorClass<AiReviewerOutputError>()("AiReviewerOutputError", {
   raw: Schema.String,
   cause: Schema.Defect(),
@@ -179,7 +184,15 @@ const callGroq = Effect.fn("AiReviewer.callGroq")(function* (
 export const AiReviewerLive = Layer.effect(
   AiReviewer,
   Effect.gen(function* () {
-    const apiKey = yield* Config.schema(Schema.Redacted(Schema.String), "GROQ_API_KEY")
+    const apiKey = yield* Config.schema(Schema.Redacted(Schema.String), "GROQ_API_KEY").pipe(
+      Effect.mapError(
+        (cause) =>
+          new AiReviewerConfigError({
+            reason: "GROQ_API_KEY is not set or is empty. Add it as a repository secret in the CALLER repo (e.g. easyrent-fe > Settings > Secrets and variables > Actions).",
+            cause,
+          }),
+      ),
+    )
 
     const review = Effect.fn("AiReviewer.review")(function* (input: {
       readonly diff: string
