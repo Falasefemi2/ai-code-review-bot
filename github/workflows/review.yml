@@ -1,8 +1,11 @@
 name: AI Code Review
 
+# This workflow is a reusable workflow invoked from other repos via
+# `uses: <this-repo>/.github/workflows/review.yml@main` (see
+# templates/review-caller.yml). It MUST declare `workflow_call`; the caller
+# controls which events trigger it.
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  workflow_call:
 
 permissions:
   contents: read
@@ -12,8 +15,18 @@ jobs:
   review:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
+      # IMPORTANT: checkout the BOT repository (the repo that owns this
+      # workflow), NOT the triggering/caller repo. A reusable workflow's
+      # default checkout points to the caller, which never contains
+      # src/index.ts. The bot targets the caller repo via the GITHUB_REPOSITORY
+      # env var (set automatically in the caller's context) and fetches the
+      # diff from the GitHub API, so it needs no local copy of the target repo.
+      - name: Checkout bot source
         uses: actions/checkout@v4
+        with:
+          repository: Falasefemi2/ai-code-review-bot
+          ref: main
+          path: bot
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -21,9 +34,11 @@ jobs:
           bun-version: 1.3.14
 
       - name: Install dependencies
+        working-directory: bot
         run: bun install --frozen-lockfile
 
       - name: Run AI code review
+        working-directory: bot
         run: bun run src/index.ts
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
