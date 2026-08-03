@@ -55,7 +55,7 @@ const GroqChatResponse = Schema.Struct({
 
 const decodeGroqResponse = Schema.decodeUnknownEffect(GroqChatResponse)
 
-interface AiReviewerShape {
+export interface AiReviewerShape {
   readonly review: (input: {
     readonly diff: string
     readonly lint: LintResult
@@ -71,11 +71,6 @@ export class AiReviewer extends Context.Service<AiReviewer, AiReviewerShape>()(
 
 const MODEL = "openai/gpt-oss-120b"
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
-
-// Groq's free tier has a token budget per request/minute; a very large diff
-// risks a 413 or throttling before it risks the model actually going off
-// the rails. Truncate defensively — this is a blunt instrument, flag if you
-// want per-hunk chunking + multiple calls instead.
 const MAX_DIFF_CHARS = 24_000
 
 const buildPrompt = (diff: string, lint: LintResult) => {
@@ -112,85 +107,93 @@ const SYSTEM_PROMPT = [
   "Be specific and reference exact file paths from the diff. Do not invent file paths.",
 ].join(" ")
 
-const make = Effect.gen(function* () {
-  const apiKey = yield* Config.schema(Schema.Redacted(Schema.String), "GROQ_API_KEY")
+const callGroq = Effect.fn("AiReviewer.callGroq")(function* (
+  apiKey: Redacted.Redacted<string>,
+  diff: string,
+  lint: LintResult,
+) {
+  const response = yield* Effect.tryPromise({
+    try: (signal) =>
+      fetch(GROQ_URL, {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${Redacted.value(apiKey)}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          model: MODEL,
+          temperature: 0.2,
+          response_format: { type: "json_object" },
+          messages: [
+            { role: "system", content: SYSTEM_PROMPT },
+            { role: "user", content: buildPrompt(diff, lint) },
+          ],
+        }),
+        signal,
+      }),
+    catch: (cause) => new AiReviewerFetchError({ cause }),
+  })
 
-  const callGroq = (diff: string, lint: LintResult) =>
-    Effect.gen(function* () {
-      const response = yield* Effect.tryPromise({
-        try: (signal) =>
-          fetch(GROQ_URL, {
-            method: "POST",
-            headers: {
-              Authorization: `Bearer ${Redacted.value(apiKey)}`,
-              "Content-Type": "application/json",
-            },
-            body: JSON.stringify({
-              model: MODEL,
-              temperature: 0.2,
-              response_format: { type: "json_object" },
-              messages: [
-                { role: "system", content: SYSTEM_PROMPT },
-                { role: "user", content: buildPrompt(diff, lint) },
-              ],
-            }),
-            signal,
-          }),
-        catch: (cause) => new AiReviewerFetchError({ cause }),
-      })
+  if (response.status === 429) {
+    const retryAfterHeader = response.headers.get("retry-after")
+    const retryAfterSeconds = retryAfterHeader ? Number(retryAfterHeader) : undefined
+    return yield* new AiReviewerRateLimitError({
+      retryAfterSeconds: Number.isFinite(retryAfterSeconds) ? retryAfterSeconds : undefined,
+    })
+  }
 
-      if (response.status === 429) {
-        const retryAfterHeader = response.headers.get("retry-after")
-        const retryAfterSeconds = retryAfterHeader ? Number(retryAfterHeader) : undefined
-        return yield* new AiReviewerRateLimitError({
-          retryAfterSeconds: Number.isFinite(retryAfterSeconds) ? retryAfterSeconds : undefined,
-        })
-      }
+  if (!response.ok) {
+    const body = yield* Effect.tryPromise(() => response.text()).pipe(
+      Effect.orElseSucceed(() => "<unreadable response body>"),
+    )
+    return yield* new AiReviewerApiError({ status: response.status, body })
+  }
 
-      if (!response.ok) {
-        const body = yield* Effect.tryPromise(() => response.text()).pipe(
-          Effect.orElseSucceed(() => "<unreadable response body>"),
-        )
-        return yield* new AiReviewerApiError({ status: response.status, body })
-      }
+  const json = yield* Effect.tryPromise({
+    try: () => response.json() as Promise<unknown>,
+    catch: (cause) => new AiReviewerFetchError({ cause }),
+  })
 
-      const json = yield* Effect.tryPromise({
-        try: () => response.json() as Promise<unknown>,
-        catch: (cause) => new AiReviewerFetchError({ cause }),
-      })
+  const parsed = yield* decodeGroqResponse(json).pipe(
+    Effect.mapError((cause) => new AiReviewerOutputError({ raw: JSON.stringify(json), cause })),
+  )
 
-      const parsed = yield* decodeGroqResponse(json).pipe(
-        Effect.mapError((cause) => new AiReviewerOutputError({ raw: JSON.stringify(json), cause })),
-      )
+  const content = parsed.choices[0]?.message.content
+  if (content === undefined) {
+    return yield* new AiReviewerOutputError({
+      raw: JSON.stringify(json),
+      cause: "no choices returned",
+    })
+  }
 
-      const content = parsed.choices[0]?.message.content
-      if (content === undefined) {
-        return yield* new AiReviewerOutputError({
-          raw: JSON.stringify(json),
-          cause: "no choices returned",
-        })
-      }
+  const contentJson = yield* Effect.try({
+    try: () => JSON.parse(content) as unknown,
+    catch: (cause) => new AiReviewerOutputError({ raw: content, cause }),
+  })
 
-      const contentJson = yield* Effect.try({
-        try: () => JSON.parse(content) as unknown,
-        catch: (cause) => new AiReviewerOutputError({ raw: content, cause }),
-      })
+  return yield* decodeReviewOutput(contentJson).pipe(
+    Effect.mapError((cause) => new AiReviewerOutputError({ raw: content, cause })),
+  )
+})
 
-      return yield* decodeReviewOutput(contentJson).pipe(
-        Effect.mapError((cause) => new AiReviewerOutputError({ raw: content, cause })),
+export const AiReviewerLive = Layer.effect(
+  AiReviewer,
+  Effect.gen(function* () {
+    const apiKey = yield* Config.schema(Schema.Redacted(Schema.String), "GROQ_API_KEY")
+
+    const review = Effect.fn("AiReviewer.review")(function* (input: {
+      readonly diff: string
+      readonly lint: LintResult
+    }) {
+      return yield* callGroq(apiKey, input.diff, input.lint).pipe(
+        Effect.retry({
+          schedule: Schedule.exponential("1 second"),
+          times: 3,
+          while: (e) => e._tag === "AiReviewerRateLimitError",
+        }),
       )
     })
 
-  const review: AiReviewerShape["review"] = ({ diff, lint }) =>
-    callGroq(diff, lint).pipe(
-      Effect.retry({
-        schedule: Schedule.exponential("1 second"),
-        times: 3,
-        while: (e) => e._tag === "AiReviewerRateLimitError",
-      }),
-    )
-
-  return { review }
-})
-
-export const AiReviewerLive = Layer.effect(AiReviewer, make)
+    return AiReviewer.of({ review })
+  }),
+)
