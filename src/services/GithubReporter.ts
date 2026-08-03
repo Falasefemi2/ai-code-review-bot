@@ -1,8 +1,11 @@
 import * as Context from "effect/Context"
 import * as Effect from "effect/Effect"
+import { flow } from "effect/Function"
 import * as Layer from "effect/Layer"
 import * as Redacted from "effect/Redacted"
+import * as Schedule from "effect/Schedule"
 import * as Schema from "effect/Schema"
+import { HttpBody, HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { AppConfig } from "../config.ts"
 import type { ReviewOutput } from "./AiReviewer.ts"
 
@@ -23,7 +26,7 @@ export class GithubReporterApiError extends Schema.TaggedErrorClass<GithubReport
 
 type ReporterError = GithubReporterFetchError | GithubReporterApiError
 
-interface GithubReporterShape {
+export interface GithubReporterShape {
   readonly report: (review: ReviewOutput) => Effect.Effect<void, ReporterError>
 }
 
@@ -31,13 +34,11 @@ export class GithubReporter extends Context.Service<GithubReporter, GithubReport
   "ai-code-review-bot/services/GithubReporter",
 ) {}
 
-// Hidden marker so subsequent runs on the same PR find and update this
-// comment instead of posting a new one on every push.
 const MARKER = "<!-- ai-code-review-bot:comment -->"
 
 const SEVERITY_EMOJI: Record<ReviewOutput["findings"][number]["severity"], string> = {
   bug: "🐛",
-  warning: "!",
+  warning: "⚠️",
   suggestion: "💡",
 }
 
@@ -55,74 +56,112 @@ const formatBody = (review: ReviewOutput): string => {
   return lines.join("\n")
 }
 
-interface IssueComment {
-  readonly id: number
-  readonly body: string
-}
+const IssueComment = Schema.Struct({
+  id: Schema.Number,
+  body: Schema.String,
+})
+const IssueComments = Schema.Array(IssueComment)
+const decodeComments = Schema.decodeUnknownEffect(IssueComments)
 
-const make = Effect.gen(function* () {
-  const { githubToken, owner, repo, prNumber } = yield* AppConfig
+export const GithubReporterLive = Layer.effect(
+  GithubReporter,
+  Effect.gen(function* () {
+    const { githubToken, owner, repo, prNumber } = yield* AppConfig
+    const baseClient = yield* HttpClient.HttpClient
 
-  const headers = {
-    Authorization: `Bearer ${Redacted.value(githubToken)}`,
-    Accept: "application/vnd.github+json",
-    "Content-Type": "application/json",
-    "X-GitHub-Api-Version": "2022-11-28",
-  }
+    const client = baseClient.pipe(
+      HttpClient.mapRequest(
+        flow(
+          HttpClientRequest.prependUrl("https://api.github.com"),
+          HttpClientRequest.setHeader("Authorization", `Bearer ${Redacted.value(githubToken)}`),
+          HttpClientRequest.setHeader("Accept", "application/vnd.github+json"),
+          HttpClientRequest.setHeader("Content-Type", "application/json"),
+          HttpClientRequest.setHeader("X-GitHub-Api-Version", "2022-11-28"),
+        ),
+      ),
+      HttpClient.retryTransient({
+        schedule: Schedule.exponential("100 millis"),
+        times: 3,
+      }),
+    )
 
-  const commentsUrl = `https://api.github.com/repos/${owner}/${repo}/issues/${prNumber}/comments`
+    const findExistingComment = Effect.fn("GithubReporter.findExistingComment")(function* () {
+      const response = yield* client.get(`/repos/${owner}/${repo}/issues/${prNumber}/comments`).pipe(
+        Effect.flatMap((res) =>
+          HttpClientResponse.matchStatus(res, {
+            "2xx": (res2) =>
+              res2.json.pipe(
+                Effect.flatMap(decodeComments),
+                Effect.mapError((cause) => new GithubReporterFetchError({ cause })),
+              ),
+            orElse: (res2) =>
+              res2.text.pipe(
+                Effect.orElseSucceed(() => "<unreadable response body>"),
+                Effect.flatMap((body) =>
+                  Effect.fail<GithubReporterApiError>(new GithubReporterApiError({ status: res2.status, body })),
+                ),
+              ),
+          }),
+        ),
+        Effect.mapError((cause) =>
+          cause._tag === "GithubReporterApiError" ? cause : new GithubReporterFetchError({ cause }),
+        ),
+      )
 
-  const request = (url: string, init: RequestInit): Effect.Effect<{ status: number; json: unknown }, ReporterError> =>
-    Effect.gen(function* () {
-      const response = yield* Effect.tryPromise({
-        try: (signal) => fetch(url, { ...init, headers, signal }),
-        catch: (cause) => new GithubReporterFetchError({ cause }),
-      })
-
-      if (!response.ok) {
-        const body = yield* Effect.tryPromise(() => response.text()).pipe(
-          Effect.orElseSucceed(() => "<unreadable response body>"),
-        )
-        return yield* new GithubReporterApiError({ status: response.status, body })
-      }
-
-      // 204 No Content (e.g. some update paths) has no body to parse.
-      if (response.status === 204) return { status: response.status, json: null }
-
-      const json = yield* Effect.tryPromise({
-        try: () => response.json() as Promise<unknown>,
-        catch: (cause) => new GithubReporterFetchError({ cause }),
-      })
-      return { status: response.status, json }
+      return response.find((c) => c.body.startsWith(MARKER))
     })
 
-  const findExistingComment = Effect.gen(function* () {
-    // First page only (30 comments) — a PR with a long-running bot comment
-    // buried past page 1 is an edge case we accept for v1.
-    const { json } = yield* request(commentsUrl, { method: "GET" })
-    const comments = json as ReadonlyArray<IssueComment>
-    return comments.find((c) => c.body.startsWith(MARKER))
-  })
-
-  const report = (review: ReviewOutput) =>
-    Effect.gen(function* () {
-      const body = formatBody(review)
-      const existing = yield* findExistingComment
+    const report = Effect.fn("GithubReporter.report")(function* (review: ReviewOutput) {
+      const bodyText = formatBody(review)
+      const existing = yield* findExistingComment()
 
       if (existing) {
-        yield* request(`https://api.github.com/repos/${owner}/${repo}/issues/comments/${existing.id}`, {
-          method: "PATCH",
-          body: JSON.stringify({ body }),
-        })
+        yield* client
+          .patch(`/repos/${owner}/${repo}/issues/comments/${existing.id}`, {
+            body: HttpBody.jsonUnsafe({ body: bodyText }),
+          })
+          .pipe(
+            Effect.flatMap((res) =>
+              HttpClientResponse.matchStatus(res, {
+                "2xx": () => Effect.void,
+                orElse: (res2) =>
+                  res2.text.pipe(
+                    Effect.orElseSucceed(() => "<unreadable response body>"),
+                    Effect.flatMap((body) =>
+                      Effect.fail<GithubReporterApiError>(new GithubReporterApiError({ status: res2.status, body })),
+                    ),
+                  ),
+              }),
+            ),
+            Effect.mapError((cause) =>
+              cause._tag === "GithubReporterApiError" ? cause : new GithubReporterFetchError({ cause }),
+            ),
+          )
       } else {
-        yield* request(commentsUrl, {
-          method: "POST",
-          body: JSON.stringify({ body }),
-        })
+        yield* client
+          .post(`/repos/${owner}/${repo}/issues/${prNumber}/comments`, {
+            body: HttpBody.jsonUnsafe({ body: bodyText }),
+          })
+          .pipe(
+            Effect.flatMap((res) =>
+              HttpClientResponse.matchStatus(res, {
+                "2xx": () => Effect.void,
+                orElse: (res2) =>
+                  res2.text.pipe(
+                    Effect.orElseSucceed(() => "<unreadable response body>"),
+                    Effect.flatMap((body) =>
+                      Effect.fail<GithubReporterApiError>(new GithubReporterApiError({ status: res2.status, body })),
+                    ),
+                  ),
+              }),
+            ),
+            Effect.mapError((cause) =>
+              cause._tag === "GithubReporterApiError" ? cause : new GithubReporterFetchError({ cause }),
+            ),
+          )
       }
     })
 
-  return { report }
-})
-
-export const GithubReporterLive = Layer.effect(GithubReporter, make)
+    return GithubReporter.of({ report })
+  }),
+)

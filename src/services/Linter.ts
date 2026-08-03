@@ -41,7 +41,7 @@ export interface LintResult {
   readonly diagnostics: ReadonlyArray<LintDiagnostic>
 }
 
-interface LinterShape {
+export interface LinterShape {
   readonly check: (paths: ReadonlyArray<string>) => Effect.Effect<LintResult, LinterSpawnError | LinterOutputError>
 }
 
@@ -49,48 +49,42 @@ export class Linter extends Context.Service<Linter, LinterShape>()("ai-code-revi
 
 const decodeReport = Schema.decodeUnknownEffect(BiomeReport)
 
-const check = (paths: ReadonlyArray<string>) =>
-  Effect.gen(function* () {
-    if (paths.length === 0) {
-      return { errorCount: 0, warningCount: 0, diagnostics: [] }
-    }
+const check = Effect.fn("Linter.check")(function* (paths: ReadonlyArray<string>) {
+  if (paths.length === 0) {
+    return { errorCount: 0, warningCount: 0, diagnostics: [] }
+  }
 
-    const proc = yield* Effect.try({
-      try: () =>
-        Bun.spawn(["biome", "check", "--reporter=json", ...paths], {
-          stdout: "pipe",
-          stderr: "pipe",
-        }),
-      catch: (cause) => new LinterSpawnError({ cause }),
-    })
-
-    const stdout = yield* Effect.tryPromise({
-      try: () => new Response(proc.stdout).text(),
-      catch: (cause) => new LinterSpawnError({ cause }),
-    })
-
-    // Non-zero exit is expected whenever Biome finds issues — that's not a
-    // process failure, so we don't inspect the exit code at all. We just
-    // need the process to have finished before trusting stdout is complete.
-    yield* Effect.tryPromise({
-      try: () => proc.exited,
-      catch: (cause) => new LinterSpawnError({ cause }),
-    })
-
-    const parsed = yield* Effect.try({
-      try: () => JSON.parse(stdout) as unknown,
-      catch: (cause) => new LinterOutputError({ stdout, cause }),
-    })
-
-    const report = yield* decodeReport(parsed).pipe(
-      Effect.mapError((cause) => new LinterOutputError({ stdout, cause })),
-    )
-
-    return {
-      errorCount: report.summary.errors,
-      warningCount: report.summary.warnings,
-      diagnostics: report.diagnostics,
-    }
+  const proc = yield* Effect.try({
+    try: () =>
+      Bun.spawn(["biome", "check", "--reporter=json", ...paths], {
+        stdout: "pipe",
+        stderr: "pipe",
+      }),
+    catch: (cause) => new LinterSpawnError({ cause }),
   })
 
-export const LinterLive = Layer.succeed(Linter, { check })
+  const stdout = yield* Effect.tryPromise({
+    try: () => new Response(proc.stdout).text(),
+    catch: (cause) => new LinterSpawnError({ cause }),
+  })
+
+  yield* Effect.tryPromise({
+    try: () => proc.exited,
+    catch: (cause) => new LinterSpawnError({ cause }),
+  })
+
+  const parsed = yield* Effect.try({
+    try: () => JSON.parse(stdout) as unknown,
+    catch: (cause) => new LinterOutputError({ stdout, cause }),
+  })
+
+  const report = yield* decodeReport(parsed).pipe(Effect.mapError((cause) => new LinterOutputError({ stdout, cause })))
+
+  return {
+    errorCount: report.summary.errors,
+    warningCount: report.summary.warnings,
+    diagnostics: report.diagnostics,
+  }
+})
+
+export const LinterLive = Layer.succeed(Linter, Linter.of({ check }))

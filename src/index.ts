@@ -1,16 +1,8 @@
 import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
-import * as Ref from "effect/Ref"
 import { FetchHttpClient } from "effect/unstable/http"
-import {
-  AppConfigLive,
-  EventConfig,
-  EventConfigLive,
-  PrNumberRef,
-  PrNumberRefLive,
-  readPrNumberFromEvent,
-} from "./config.ts"
+import { AppConfig, EventConfig, EventConfigLive, makeAppConfig, readPrNumberFromEvent } from "./config.ts"
 import { AiReviewer, AiReviewerLive } from "./services/AiReviewer.ts"
 import { extractChangedFiles, GitDiff, GitDiffLive } from "./services/GitDiff.ts"
 import { GithubReporter, GithubReporterLive } from "./services/GithubReporter.ts"
@@ -22,11 +14,11 @@ const DEFAULT_BRANCHES = new Set(["main", "master"])
 // ---------------------------------------------------------------------------
 // Phase 1: resolve which PR we are reviewing (Option), or bail out cleanly.
 // ---------------------------------------------------------------------------
-const resolvePullRequestNumber = Effect.gen(function* () {
+const resolvePullRequestNumber = Effect.fn("resolvePullRequestNumber")(function* () {
   const { eventName, branch } = yield* EventConfig
 
   if (eventName === "pull_request") {
-    const prNumber = yield* readPrNumberFromEvent
+    const prNumber = yield* readPrNumberFromEvent()
     return Option.some(prNumber)
   }
 
@@ -63,13 +55,13 @@ const resolvePullRequestNumber = Effect.gen(function* () {
 // ---------------------------------------------------------------------------
 // Phase 2: run the actual review against the resolved prNumber.
 // ---------------------------------------------------------------------------
-const runReview = Effect.gen(function* () {
+const runReview = Effect.fn("runReview")(function* () {
   const gitDiff = yield* GitDiff
   const linter = yield* Linter
   const aiReviewer = yield* AiReviewer
   const reporter = yield* GithubReporter
 
-  const diff = yield* gitDiff.get
+  const diff = yield* gitDiff.get()
   const changedFiles = extractChangedFiles(diff)
 
   yield* Effect.log(`Reviewing ${changedFiles.length} changed file(s)`)
@@ -85,41 +77,32 @@ const runReview = Effect.gen(function* () {
 })
 
 // ---------------------------------------------------------------------------
-// Orchestration: resolve the PR number, stash it in the shared Ref, then let
-// phase 2 run. If phase 1 found nothing to review, exit cleanly (exit 0).
+// Orchestration: resolve the PR number, dynamically build the AppConfig layer,
+// then execute phase 2 cleanly without mutable global state.
 // ---------------------------------------------------------------------------
-const program = Effect.gen(function* () {
-  const maybePrNumber = yield* resolvePullRequestNumber
+const program = Effect.fn("program")(function* () {
+  const maybePrNumber = yield* resolvePullRequestNumber()
 
   if (Option.isNone(maybePrNumber)) {
     return
   }
 
-  const { ref } = yield* PrNumberRef
-  yield* Ref.set(ref, maybePrNumber)
+  const prNumber = maybePrNumber.value
+  const appConfig = yield* makeAppConfig(prNumber)
+  const AppConfigLive = Layer.succeed(AppConfig, appConfig)
 
-  yield* runReview
+  const ReviewServices = Layer.mergeAll(GitDiffLive, LinterLive, AiReviewerLive, GithubReporterLive).pipe(
+    Layer.provide(AppConfigLive),
+    Layer.provide(FetchHttpClient.layer),
+  )
+
+  yield* runReview().pipe(Effect.provide(ReviewServices))
 })
 
-// Static, top-level composition. EventConfig + PrNumberRef are shared
-// prerequisites; AppConfig derives from both. All layers built up front —
-// no runtime number is threaded through construction.
-const appConfigWithPrereqs = Layer.provide(AppConfigLive, Layer.merge(EventConfigLive, PrNumberRefLive))
+// Composition for Phase 1 dependencies: EventConfig, PrLookup, HttpClient.
+const Phase1Services = Layer.mergeAll(EventConfigLive, PrLookupLive).pipe(Layer.provide(FetchHttpClient.layer))
 
-const MainServices = Layer.mergeAll(
-  Layer.provide(GitDiffLive, Layer.merge(appConfigWithPrereqs, FetchHttpClient.layer)),
-  LinterLive,
-  AiReviewerLive,
-  Layer.provide(GithubReporterLive, appConfigWithPrereqs),
-  Layer.provide(PrLookupLive, Layer.merge(EventConfigLive, FetchHttpClient.layer)),
-)
-
-// Program needs both the review services AND the shared prerequisites
-// (EventConfig + PrNumberRef, used directly in phase 1). Merge the two live
-// sets together so `Effect.provide` strips everything from the program.
-const MainLive = Layer.merge(MainServices, Layer.merge(EventConfigLive, PrNumberRefLive))
-
-const runnable = program.pipe(Effect.provide(MainLive))
+const runnable = program().pipe(Effect.provide(Phase1Services))
 
 Effect.runPromise(runnable).catch((error) => {
   console.error("Review bot failed:", error)
