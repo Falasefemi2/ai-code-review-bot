@@ -15,42 +15,48 @@ export class EventConfigError extends Schema.TaggedErrorClass<EventConfigError>(
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
-export interface EventConfigShape {
-  readonly githubToken: Redacted.Redacted<string>
-  readonly owner: string
-  readonly repo: string
-  readonly eventName: string
-  readonly branch: string | null
-  readonly eventPath: string
-}
+export class EventConfig extends Context.Service<
+  EventConfig,
+  {
+    readonly githubToken: Redacted.Redacted<string>
+    readonly owner: string
+    readonly repo: string
+    readonly eventName: string
+    readonly branch: string | null
+    readonly eventPath: string
+  }
+>()("ai-code-review-bot/config/EventConfig") {}
 
-export class EventConfig extends Context.Service<EventConfig, EventConfigShape>()(
-  "ai-code-review-bot/config/EventConfig",
-) {}
+export class AppConfig extends Context.Service<
+  AppConfig,
+  {
+    readonly githubToken: Redacted.Redacted<string>
+    readonly owner: string
+    readonly repo: string
+    readonly prNumber: number
+  }
+>()("ai-code-review-bot/config/AppConfig") {}
 
-export interface AppConfigShape {
-  readonly githubToken: Redacted.Redacted<string>
-  readonly owner: string
-  readonly repo: string
-  readonly prNumber: number
-}
+const PullRequestEvent = Schema.Struct({
+  pull_request: Schema.NullOr(Schema.Struct({ number: Schema.Number })),
+})
 
-export class AppConfig extends Context.Service<AppConfig, AppConfigShape>()("ai-code-review-bot/config/AppConfig") {}
+const MISSING_PR_NUMBER =
+  "GITHUB_EVENT_PATH payload has no pull_request.number — was this triggered by a pull_request event?"
 
-const readPullRequestNumber = Effect.fn("readPullRequestNumber")(function* (eventPath: string) {
-  const event = yield* Effect.tryPromise({
-    try: async () => {
-      const file = Bun.file(eventPath)
-      return (await file.json()) as { pull_request?: { number?: number } }
-    },
+export const readPullRequestNumber = Effect.fn("readPullRequestNumber")(function* (eventPath: string) {
+  const raw: unknown = yield* Effect.tryPromise({
+    try: () => Bun.file(eventPath).json(),
     catch: (cause) => new AppConfigError({ reason: `failed to read/parse event payload at ${eventPath}`, cause }),
   })
 
-  const prNumber = event.pull_request?.number
+  const parsed = yield* Schema.decodeUnknownEffect(PullRequestEvent)(raw).pipe(
+    Effect.mapError((cause) => new AppConfigError({ reason: MISSING_PR_NUMBER, cause })),
+  )
+
+  const prNumber = parsed.pull_request === null ? undefined : parsed.pull_request.number
   if (prNumber === undefined) {
-    return yield* new AppConfigError({
-      reason: "GITHUB_EVENT_PATH payload has no pull_request.number — was this triggered by a pull_request event?",
-    })
+    return yield* new AppConfigError({ reason: MISSING_PR_NUMBER })
   }
 
   return prNumber
@@ -84,11 +90,6 @@ const makeEventConfig = Effect.gen(function* () {
 })
 
 export const EventConfigLive = Layer.effect(EventConfig, makeEventConfig)
-
-export const readPrNumberFromEvent = Effect.fn("readPrNumberFromEvent")(function* () {
-  const { eventPath } = yield* EventConfig
-  return yield* readPullRequestNumber(eventPath)
-})
 
 export const makeAppConfig = Effect.fn("makeAppConfig")(function* (prNumber: number) {
   const { githubToken, owner, repo } = yield* EventConfig

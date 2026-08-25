@@ -41,11 +41,12 @@ export interface LintResult {
   readonly diagnostics: ReadonlyArray<LintDiagnostic>
 }
 
-export interface LinterShape {
-  readonly check: (paths: ReadonlyArray<string>) => Effect.Effect<LintResult, LinterSpawnError | LinterOutputError>
-}
-
-export class Linter extends Context.Service<Linter, LinterShape>()("ai-code-review-bot/services/Linter") {}
+export class Linter extends Context.Service<
+  Linter,
+  {
+    readonly check: (paths: ReadonlyArray<string>) => Effect.Effect<LintResult, LinterSpawnError | LinterOutputError>
+  }
+>()("ai-code-review-bot/services/Linter") {}
 
 const decodeReport = Schema.decodeUnknownEffect(BiomeReport)
 
@@ -68,13 +69,26 @@ const check = Effect.fn("Linter.check")(function* (paths: ReadonlyArray<string>)
     catch: (cause) => new LinterSpawnError({ cause }),
   })
 
-  yield* Effect.tryPromise({
+  const stderr = yield* Effect.tryPromise({
+    try: () => new Response(proc.stderr).text(),
+    catch: () => "",
+  }).pipe(Effect.orElseSucceed(() => ""))
+
+  const exitCode = yield* Effect.tryPromise({
     try: () => proc.exited,
     catch: (cause) => new LinterSpawnError({ cause }),
   })
 
-  const parsed = yield* Effect.try({
-    try: () => JSON.parse(stdout) as unknown,
+  // biome exits 0 (clean) or 1 (diagnostics reported); anything else is a real failure.
+  if (exitCode >= 2) {
+    return yield* new LinterOutputError({
+      stdout,
+      cause: `biome exited with code ${exitCode}${stderr ? `: ${stderr.slice(0, 500)}` : ""}`,
+    })
+  }
+
+  const parsed: unknown = yield* Effect.try({
+    try: () => JSON.parse(stdout),
     catch: (cause) => new LinterOutputError({ stdout, cause }),
   })
 

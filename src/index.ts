@@ -2,9 +2,10 @@ import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Option from "effect/Option"
 import { FetchHttpClient } from "effect/unstable/http"
-import { AppConfig, EventConfig, EventConfigLive, makeAppConfig, readPrNumberFromEvent } from "./config.ts"
+import { AppConfig, EventConfig, EventConfigLive, makeAppConfig, readPullRequestNumber } from "./config.ts"
 import { AiReviewer, AiReviewerLive } from "./services/AiReviewer.ts"
 import { extractChangedFiles, GitDiff, GitDiffLive } from "./services/GitDiff.ts"
+import { GithubClientLive } from "./services/GithubClient.ts"
 import { GithubReporter, GithubReporterLive } from "./services/GithubReporter.ts"
 import { Linter, LinterLive } from "./services/Linter.ts"
 import { PrLookup, PrLookupLive } from "./services/PrLookup.ts"
@@ -15,10 +16,10 @@ const DEFAULT_BRANCHES = new Set(["main", "master"])
 // Phase 1: resolve which PR we are reviewing (Option), or bail out cleanly.
 // ---------------------------------------------------------------------------
 const resolvePullRequestNumber = Effect.fn("resolvePullRequestNumber")(function* () {
-  const { eventName, branch } = yield* EventConfig
+  const { eventName, branch, eventPath } = yield* EventConfig
 
   if (eventName === "pull_request") {
-    const prNumber = yield* readPrNumberFromEvent()
+    const prNumber = yield* readPullRequestNumber(eventPath)
     return Option.some(prNumber)
   }
 
@@ -36,10 +37,8 @@ const resolvePullRequestNumber = Effect.fn("resolvePullRequestNumber")(function*
     const maybeNumber = yield* prLookup
       .findOpenPrForBranch(branch)
       .pipe(
-        Effect.catchTag("PrLookupApiError", (e) =>
-          Effect.log(`GitHub API error while looking up PR for branch "${branch}": ${e.status} ${e.body}`).pipe(
-            Effect.andThen(Effect.fail(e)),
-          ),
+        Effect.tapErrorTag("GithubApiError", (e) =>
+          Effect.log(`GitHub API error while looking up PR for branch "${branch}": ${e.status} ${e.body}`),
         ),
       )
     if (Option.isNone(maybeNumber)) {
@@ -63,16 +62,24 @@ const runReview = Effect.fn("runReview")(function* () {
 
   const diff = yield* gitDiff.get()
   const changedFiles = extractChangedFiles(diff)
+  const changedPaths = new Set(changedFiles.map((path) => path.replace(/^\.\//, "")))
 
   yield* Effect.log(`Reviewing ${changedFiles.length} changed file(s)`)
 
   const lint = yield* linter.check(changedFiles)
   const review = yield* aiReviewer.review({ diff, lint })
 
-  yield* reporter.report(review)
+  const knownFindings = review.findings.filter((finding) => changedPaths.has(finding.file.replace(/^\.\//, "")))
+  if (knownFindings.length < review.findings.length) {
+    yield* Effect.log(
+      `Discarded ${review.findings.length - knownFindings.length} finding(s) referencing files outside the diff`,
+    )
+  }
+
+  yield* reporter.report({ ...review, findings: knownFindings })
 
   yield* Effect.log(
-    `Posted review: ${review.findings.length} finding(s) (${lint.errorCount} lint errors, ${lint.warningCount} lint warnings)`,
+    `Posted review: ${knownFindings.length} finding(s) (${lint.errorCount} lint errors, ${lint.warningCount} lint warnings)`,
   )
 })
 
@@ -80,6 +87,8 @@ const runReview = Effect.fn("runReview")(function* () {
 // Orchestration: resolve the PR number, dynamically build the AppConfig layer,
 // then execute phase 2 cleanly without mutable global state.
 // ---------------------------------------------------------------------------
+const GithubClientReady = Layer.provide(GithubClientLive, Layer.mergeAll(EventConfigLive, FetchHttpClient.layer))
+
 const program = Effect.fn("program")(function* () {
   const maybePrNumber = yield* resolvePullRequestNumber()
 
@@ -93,14 +102,15 @@ const program = Effect.fn("program")(function* () {
 
   const ReviewServices = Layer.mergeAll(GitDiffLive, LinterLive, AiReviewerLive, GithubReporterLive).pipe(
     Layer.provide(AppConfigLive),
+    Layer.provide(GithubClientReady),
     Layer.provide(FetchHttpClient.layer),
   )
 
   yield* runReview().pipe(Effect.provide(ReviewServices))
 })
 
-// Composition for Phase 1 dependencies: EventConfig, PrLookup, HttpClient.
-const Phase1Services = Layer.provideMerge(PrLookupLive, EventConfigLive).pipe(Layer.provideMerge(FetchHttpClient.layer))
+// Composition for Phase 1 dependencies: EventConfig, PrLookup, GithubClient.
+const Phase1Services = PrLookupLive.pipe(Layer.provideMerge(EventConfigLive), Layer.provide(GithubClientReady))
 
 const runnable = program().pipe(Effect.provide(Phase1Services))
 
