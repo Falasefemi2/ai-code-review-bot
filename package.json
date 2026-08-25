@@ -6,7 +6,9 @@
   "devDependencies": {
     "@biomejs/biome": "2.5.6",
     "@effect/language-service": "^0.87.1",
-    "@types/bun": "latest"
+    "@oxlint/plugins": "1.80.0",
+    "@types/bun": "latest",
+    "oxlint": "1.80.0"
   },
   "scripts": {
     "start": "bun run src/index.ts",
@@ -16,9 +18,11 @@
     "format:check": "biome format .",
     "lint": "biome lint --write .",
     "lint:check": "biome lint .",
+    "lint:anti-slop": "oxlint",
     "check": "biome check --write .",
     "check:check": "biome check .",
-    "ci": "biome ci .",
+    "test": "bun test",
+    "ci": "biome ci . && bun test && oxlint",
     "biome:start": "biome start",
     "biome:stop": "biome stop",
     "biome:clean": "biome clean",
@@ -31,8 +35,6 @@
     "typescript": "^6"
   },
   "dependencies": {
-    "@effect/platform-bun": ">=4.0.0-beta.102 || >=4.0.0",
-    "@effect/platform-node": ">=4.0.0-beta.102 || >=4.0.0",
     "effect": ">=4.0.0-beta.102 || >=4.0.0"
   }
 }
