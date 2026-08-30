@@ -5,12 +5,12 @@ import * as Layer from "effect/Layer"
 import type * as Redacted from "effect/Redacted"
 import * as Schema from "effect/Schema"
 
-export class AppConfigError extends Schema.TaggedErrorClass<AppConfigError>()("AppConfigError", {
+export class AppConfigError extends Schema.TaggedError<AppConfigError>()("AppConfigError", {
   reason: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}
 
-export class EventConfigError extends Schema.TaggedErrorClass<EventConfigError>()("EventConfigError", {
+export class EventConfigError extends Schema.TaggedError<EventConfigError>()("EventConfigError", {
   reason: Schema.String,
   cause: Schema.optional(Schema.Defect()),
 }) {}

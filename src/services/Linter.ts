@@ -3,11 +3,11 @@ import * as Effect from "effect/Effect"
 import * as Layer from "effect/Layer"
 import * as Schema from "effect/Schema"
 
-export class LinterSpawnError extends Schema.TaggedErrorClass<LinterSpawnError>()("LinterSpawnError", {
+export class LinterSpawnError extends Schema.TaggedError<LinterSpawnError>()("LinterSpawnError", {
   cause: Schema.Defect(),
 }) {}
 
-export class LinterOutputError extends Schema.TaggedErrorClass<LinterOutputError>()("LinterOutputError", {
+export class LinterOutputError extends Schema.TaggedError<LinterOutputError>()("LinterOutputError", {
   stdout: Schema.String,
   cause: Schema.Defect(),
 }) {}
@@ -40,13 +40,6 @@ export interface LintResult {
   readonly warningCount: number
   readonly diagnostics: ReadonlyArray<LintDiagnostic>
 }
-
-export class Linter extends Context.Service<
-  Linter,
-  {
-    readonly check: (paths: ReadonlyArray<string>) => Effect.Effect<LintResult, LinterSpawnError | LinterOutputError>
-  }
->()("ai-code-review-bot/services/Linter") {}
 
 const decodeReport = Schema.decodeUnknownEffect(BiomeReport)
 
@@ -101,4 +94,11 @@ const check = Effect.fn("Linter.check")(function* (paths: ReadonlyArray<string>)
   }
 })
 
-export const LinterLive = Layer.succeed(Linter, Linter.of({ check }))
+export class Linter extends Context.Service<Linter>()("ai-code-review-bot/services/Linter", {
+  make: Effect.succeed({ check } as const),
+}) {
+  static readonly Live = Layer.effect(this, this.make)
+  static readonly layer = Linter.Live
+}
+
+export const LinterLive = Linter.Live

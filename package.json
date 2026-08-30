@@ -5,7 +5,8 @@
   "private": true,
   "devDependencies": {
     "@biomejs/biome": "2.5.6",
-    "@effect/language-service": "^0.87.1",
+    "@effect/language-service": "^0.87.2",
+    "@effect/tsgo": "^0.38.0",
     "@oxlint/plugins": "1.80.0",
     "@types/bun": "latest",
     "oxlint": "1.80.0"
@@ -32,9 +33,9 @@
     "migrate:prettier": "biome migrate prettier"
   },
   "peerDependencies": {
-    "typescript": "^6"
+    "typescript": "^6.0.3"
   },
   "dependencies": {
-    "effect": ">=4.0.0-beta.102 || >=4.0.0"
+    "effect": "^4.0.0-rc.112"
   }
 }
