@@ -5,29 +5,13 @@ import * as Option from "effect/Option"
 import * as Schema from "effect/Schema"
 import { HttpClientRequest } from "effect/unstable/http"
 import { EventConfig } from "../config.ts"
-import {
-  expectJson,
-  type GithubApiError,
-  GithubClient,
-  type GithubNetworkError,
-  type GithubResponseError,
-} from "./GithubClient.ts"
+import { expectJson, GithubClient } from "./GithubClient.ts"
 
-const Pull = Schema.Struct({ number: Schema.Number })
+const Pull = Schema.Struct({ number: Schema.Finite })
 const PullsResponse = Schema.Array(Pull)
 
-export class PrLookup extends Context.Service<
-  PrLookup,
-  {
-    readonly findOpenPrForBranch: (
-      branch: string,
-    ) => Effect.Effect<Option.Option<number>, GithubNetworkError | GithubApiError | GithubResponseError>
-  }
->()("ai-code-review-bot/services/PrLookup") {}
-
-export const PrLookupLive = Layer.effect(
-  PrLookup,
-  Effect.gen(function* () {
+export class PrLookup extends Context.Service<PrLookup>()("ai-code-review-bot/services/PrLookup", {
+  make: Effect.gen(function* () {
     const github = yield* GithubClient
     const { owner, repo } = yield* EventConfig
 
@@ -41,6 +25,11 @@ export const PrLookupLive = Layer.effect(
       return pulls[0] === undefined ? Option.none() : Option.some(pulls[0].number)
     })
 
-    return PrLookup.of({ findOpenPrForBranch })
+    return { findOpenPrForBranch } as const
   }),
-)
+}) {
+  static readonly Live = Layer.effect(this, this.make)
+  static readonly layer = PrLookup.Live
+}
+
+export const PrLookupLive = PrLookup.Live

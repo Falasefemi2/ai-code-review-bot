@@ -8,34 +8,21 @@ import * as Schema from "effect/Schema"
 import { HttpClient, HttpClientRequest, HttpClientResponse } from "effect/unstable/http"
 import { EventConfig } from "../config.ts"
 
-export class GithubApiError extends Schema.TaggedErrorClass<GithubApiError>()("GithubApiError", {
-  status: Schema.Number,
+export class GithubApiError extends Schema.TaggedError<GithubApiError>()("GithubApiError", {
+  status: Schema.Finite,
   body: Schema.String,
 }) {}
 
-export class GithubNetworkError extends Schema.TaggedErrorClass<GithubNetworkError>()("GithubNetworkError", {
+export class GithubNetworkError extends Schema.TaggedError<GithubNetworkError>()("GithubNetworkError", {
   cause: Schema.Defect(),
 }) {}
 
-export class GithubResponseError extends Schema.TaggedErrorClass<GithubResponseError>()("GithubResponseError", {
+export class GithubResponseError extends Schema.TaggedError<GithubResponseError>()("GithubResponseError", {
   cause: Schema.Defect(),
 }) {}
 
-export class GithubClient extends Context.Service<
-  GithubClient,
-  {
-    readonly send: (
-      request: HttpClientRequest.HttpClientRequest,
-    ) => Effect.Effect<HttpClientResponse.HttpClientResponse, GithubNetworkError>
-  }
->()("ai-code-review-bot/services/GithubClient") {}
-
-const REQUEST_TIMEOUT = "20 seconds"
-const UNREADABLE_BODY = "<unreadable response body>"
-
-export const GithubClientLive = Layer.effect(
-  GithubClient,
-  Effect.gen(function* () {
+export class GithubClient extends Context.Service<GithubClient>()("ai-code-review-bot/services/GithubClient", {
+  make: Effect.gen(function* () {
     const { githubToken } = yield* EventConfig
     const baseClient = yield* HttpClient.HttpClient
 
@@ -53,15 +40,23 @@ export const GithubClientLive = Layer.effect(
       }),
     )
 
-    return GithubClient.of({
-      send: (request) =>
+    return {
+      send: (request: HttpClientRequest.HttpClientRequest) =>
         client.execute(request).pipe(
           Effect.timeout(REQUEST_TIMEOUT),
           Effect.mapError((cause) => new GithubNetworkError({ cause })),
         ),
-    })
+    } as const
   }),
-)
+}) {
+  static readonly Live = Layer.effect(this, this.make)
+  static readonly layer = GithubClient.Live
+}
+
+export const GithubClientLive = GithubClient.Live
+
+const REQUEST_TIMEOUT = "20 seconds"
+const UNREADABLE_BODY = "<unreadable response body>"
 
 export const readText = (response: HttpClientResponse.HttpClientResponse): Effect.Effect<string, GithubNetworkError> =>
   response.text.pipe(Effect.mapError((cause) => new GithubNetworkError({ cause })))

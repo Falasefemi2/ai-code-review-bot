@@ -5,23 +5,7 @@ import * as Schema from "effect/Schema"
 import { HttpBody, HttpClientRequest } from "effect/unstable/http"
 import { AppConfig } from "../config.ts"
 import type { ReviewOutput } from "./AiReviewer.ts"
-import {
-  expectJson,
-  expectSuccessful,
-  type GithubApiError,
-  GithubClient,
-  type GithubNetworkError,
-  type GithubResponseError,
-} from "./GithubClient.ts"
-
-export class GithubReporter extends Context.Service<
-  GithubReporter,
-  {
-    readonly report: (
-      review: ReviewOutput,
-    ) => Effect.Effect<void, GithubNetworkError | GithubApiError | GithubResponseError>
-  }
->()("ai-code-review-bot/services/GithubReporter") {}
+import { expectJson, expectSuccessful, GithubClient } from "./GithubClient.ts"
 
 const MARKER = "<!-- ai-code-review-bot:comment -->"
 
@@ -46,14 +30,13 @@ export const formatBody = (review: ReviewOutput): string => {
 }
 
 const IssueComment = Schema.Struct({
-  id: Schema.Number,
+  id: Schema.Finite,
   body: Schema.String,
 })
 const IssueComments = Schema.Array(IssueComment)
 
-export const GithubReporterLive = Layer.effect(
-  GithubReporter,
-  Effect.gen(function* () {
+export class GithubReporter extends Context.Service<GithubReporter>()("ai-code-review-bot/services/GithubReporter", {
+  make: Effect.gen(function* () {
     const github = yield* GithubClient
     const { owner, repo, prNumber } = yield* AppConfig
 
@@ -78,6 +61,11 @@ export const GithubReporterLive = Layer.effect(
       yield* github.send(request).pipe(Effect.flatMap((response) => expectSuccessful(response, () => Effect.void)))
     })
 
-    return GithubReporter.of({ report })
+    return { report } as const
   }),
-)
+}) {
+  static readonly Live = Layer.effect(this, this.make)
+  static readonly layer = GithubReporter.Live
+}
+
+export const GithubReporterLive = GithubReporter.Live

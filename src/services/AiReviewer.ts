@@ -9,28 +9,28 @@ import * as Schema from "effect/Schema"
 import { Headers, HttpBody, HttpClient, HttpClientRequest } from "effect/unstable/http"
 import type { LintResult } from "./Linter.ts"
 
-export class AiReviewerFetchError extends Schema.TaggedErrorClass<AiReviewerFetchError>()("AiReviewerFetchError", {
+export class AiReviewerFetchError extends Schema.TaggedError<AiReviewerFetchError>()("AiReviewerFetchError", {
   cause: Schema.Defect(),
 }) {}
 
-export class AiReviewerRateLimitError extends Schema.TaggedErrorClass<AiReviewerRateLimitError>()(
+export class AiReviewerRateLimitError extends Schema.TaggedError<AiReviewerRateLimitError>()(
   "AiReviewerRateLimitError",
   {
     retryAfterSeconds: Schema.optional(Schema.Number),
   },
 ) {}
 
-export class AiReviewerApiError extends Schema.TaggedErrorClass<AiReviewerApiError>()("AiReviewerApiError", {
+export class AiReviewerApiError extends Schema.TaggedError<AiReviewerApiError>()("AiReviewerApiError", {
   status: Schema.Number,
   body: Schema.String,
 }) {}
 
-export class AiReviewerConfigError extends Schema.TaggedErrorClass<AiReviewerConfigError>()("AiReviewerConfigError", {
+export class AiReviewerConfigError extends Schema.TaggedError<AiReviewerConfigError>()("AiReviewerConfigError", {
   reason: Schema.String,
   cause: Schema.Defect(),
 }) {}
 
-export class AiReviewerOutputError extends Schema.TaggedErrorClass<AiReviewerOutputError>()("AiReviewerOutputError", {
+export class AiReviewerOutputError extends Schema.TaggedError<AiReviewerOutputError>()("AiReviewerOutputError", {
   raw: Schema.String,
   cause: Schema.Defect(),
 }) {}
@@ -61,19 +61,6 @@ const GroqChatResponse = Schema.Struct({
 })
 
 const decodeGroqResponse = Schema.decodeUnknownEffect(GroqChatResponse)
-
-export class AiReviewer extends Context.Service<
-  AiReviewer,
-  {
-    readonly review: (input: {
-      readonly diff: string
-      readonly lint: LintResult
-    }) => Effect.Effect<
-      ReviewOutput,
-      AiReviewerFetchError | AiReviewerRateLimitError | AiReviewerApiError | AiReviewerOutputError
-    >
-  }
->()("ai-code-review-bot/services/AiReviewer") {}
 
 const MODEL = "openai/gpt-oss-120b"
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
@@ -195,9 +182,8 @@ const callGroq = Effect.fn("AiReviewer.callGroq")(function* (
   )
 })
 
-export const AiReviewerLive = Layer.effect(
-  AiReviewer,
-  Effect.gen(function* () {
+export class AiReviewer extends Context.Service<AiReviewer>()("ai-code-review-bot/services/AiReviewer", {
+  make: Effect.gen(function* () {
     const apiKey = yield* Config.schema(Schema.Redacted(Schema.String), "GROQ_API_KEY").pipe(
       Effect.mapError(
         (cause) =>
@@ -219,6 +205,11 @@ export const AiReviewerLive = Layer.effect(
       return yield* reviewWithRetries(client, input, MAX_RETRIES)
     })
 
-    return AiReviewer.of({ review })
+    return { review } as const
   }),
-)
+}) {
+  static readonly Live = Layer.effect(this, this.make)
+  static readonly layer = AiReviewer.Live
+}
+
+export const AiReviewerLive = AiReviewer.Live
